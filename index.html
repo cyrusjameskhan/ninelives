@@ -40,6 +40,8 @@ titleImg.src = TITLE_SRC;
 const keys = new Set();
 let gameState = 'title';
 let menuMusicStarted = false;
+let pauseSelection = 0;
+let pauseMenuButtons = [];
 function activateMenuMusic(){
   if (menuMusicStarted) return;
   menuMusicStarted = true;
@@ -59,15 +61,32 @@ function startGame(){
   last = performance.now();
 }
 addEventListener('keydown', e => {
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Escape'].includes(e.code)) e.preventDefault();
   if (gameState === 'title') {
     if (!menuMusicStarted) activateMenuMusic();
     else startGame();
     return;
   }
+  if (gameState === 'pause') {
+    if (e.code === 'Escape' || e.code === 'KeyP') resumeGame();
+    else if (e.code === 'ArrowUp') pauseSelection = (pauseSelection + pauseActions.length - 1) % pauseActions.length;
+    else if (e.code === 'ArrowDown') pauseSelection = (pauseSelection + 1) % pauseActions.length;
+    else if (e.code === 'Enter' || e.code === 'Space') pauseActions[pauseSelection]?.();
+    else if (e.code === 'KeyM') toggleMusicMute();
+    return;
+  }
+  if (gameState === 'fight' && (e.code === 'Escape' || e.code === 'KeyP')) {
+    pauseGame();
+    return;
+  }
   keys.add(e.code);
 });
-addEventListener('pointerdown', () => {
+addEventListener('pointerdown', e => {
+  if (gameState === 'pause') {
+    const hit = pauseMenuButtons.find(b => e.clientX >= b.x && e.clientX <= b.x+b.w && e.clientY >= b.y && e.clientY <= b.y+b.h);
+    if (hit) hit.action();
+    return;
+  }
   if (gameState !== 'title') return;
   if (!menuMusicStarted) activateMenuMusic();
   else startGame();
@@ -212,6 +231,7 @@ const MusicEngine = (() => {
   let audioCtx = null, masterGain, reverbNode, reverbDry, reverbWet, delayNode, delayFeedback, delayGain;
   let timer = null, step = 0, nextTime = 0, mode = 'title';
   let activePreset = 'kombat', phraseCount = 0, changeAfterPhrases = 0;
+  let muted = false;
   const lookahead = .07;
 
   function randomChangeSpan(){ return mode === 'title' ? 4 + Math.floor(Math.random()*4) : 7 + Math.floor(Math.random()*7); }
@@ -235,7 +255,7 @@ const MusicEngine = (() => {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     masterGain = audioCtx.createGain();
-    masterGain.gain.value = .72;
+    masterGain.gain.value = muted ? 0 : .72;
     reverbNode = audioCtx.createConvolver();
     const len = audioCtx.sampleRate * 1.2;
     const buf = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
@@ -401,7 +421,13 @@ const MusicEngine = (() => {
     } else mode = resolved;
     setDelay();
   }
-  return { start, setMode };
+  function setMuted(value){
+    muted = !!value;
+    if (masterGain) masterGain.gain.setTargetAtTime(muted ? 0 : .72, audioCtx.currentTime, .025);
+  }
+  function toggleMuted(){ setMuted(!muted); return muted; }
+  function isMuted(){ return muted; }
+  return { start, setMode, setMuted, toggleMuted, isMuted };
 })();
 
 const SfxEngine = (() => {
@@ -565,6 +591,27 @@ let p1 = fighter('P1', W*.32, 1, false);
 let p2 = fighter('CPU', W*.68, -1, true);
 let timer = 99, timeAcc = 0, endText = '', endClock = 0;
 function resetRound(){ p1 = fighter('P1', W*.32, 1, false); p2 = fighter('CPU', W*.68, -1, true); timer = 99; timeAcc = 0; endText = ''; endClock = 0; }
+function pauseGame(){
+  if (gameState !== 'fight') return;
+  keys.clear();
+  pauseSelection = 0;
+  gameState = 'pause';
+}
+function resumeGame(){
+  if (gameState !== 'pause') return;
+  keys.clear();
+  gameState = 'fight';
+  last = performance.now();
+}
+function toggleMusicMute(){ MusicEngine.toggleMuted(); }
+function returnToMainMenu(){
+  keys.clear();
+  resetRound();
+  menuMusicStarted = true;
+  MusicEngine.setMode('title');
+  gameState = 'title';
+}
+const pauseActions = [resumeGame, toggleMusicMute, returnToMainMenu];
 function setAnim(f, anim, lock=0){
   if (f.anim !== anim) {
     f.anim=anim; f.frame=0; f.tick=0; f.hitOnce=false;
@@ -654,6 +701,35 @@ function drawUi(){
   ctx.fillStyle='white'; ctx.font='800 30px Arial'; ctx.textAlign='center'; ctx.fillText(String(timer).padStart(2,'0'),W/2,56);
   if (endText) { ctx.font='900 '+Math.max(38,52*scale)+'px Arial'; ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillText(endText,W/2,H*.38+4); ctx.fillStyle='white'; ctx.fillText(endText,W/2,H*.38); }
 }
+function drawPauseMenu(){
+  const panelW = Math.min(410, W*.72), panelH = 284;
+  const x = W/2 - panelW/2, y = H/2 - panelH/2;
+  ctx.fillStyle='rgba(0,0,0,.62)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(9,10,12,.86)'; ctx.fillRect(x,y,panelW,panelH);
+  ctx.strokeStyle='rgba(255,196,43,.74)'; ctx.lineWidth=3; ctx.strokeRect(x,y,panelW,panelH);
+  ctx.fillStyle='rgba(255,255,255,.08)'; ctx.fillRect(x+8,y+8,panelW-16,2);
+  ctx.font='900 '+Math.max(30,38*scale)+'px Arial';
+  ctx.textAlign='center';
+  ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillText('PAUSED',W/2,y+58+3);
+  ctx.fillStyle='#ffd85a'; ctx.fillText('PAUSED',W/2,y+58);
+
+  const items = [
+    {label:'RESUME', action:resumeGame},
+    {label:MusicEngine.isMuted() ? 'MUSIC: OFF' : 'MUSIC: ON', action:toggleMusicMute},
+    {label:'MAIN MENU', action:returnToMainMenu}
+  ];
+  pauseMenuButtons = items.map((item,i) => ({...item, x:x+46, y:y+92+i*58, w:panelW-92, h:42}));
+  pauseMenuButtons.forEach((b,i) => {
+    const active = i === pauseSelection;
+    ctx.fillStyle = active ? 'rgba(255,196,43,.9)' : 'rgba(255,255,255,.08)';
+    ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.strokeStyle = active ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.28)';
+    ctx.lineWidth = 2; ctx.strokeRect(b.x,b.y,b.w,b.h);
+    ctx.font='800 '+Math.max(17,21*scale)+'px Arial';
+    ctx.fillStyle = active ? '#111' : '#fff';
+    ctx.fillText(b.label,b.x+b.w/2,b.y+28);
+  });
+}
 function drawFighter(f){
   const fr=currentFrame(f), img=f.isCpu ? enemySheet : sheet, drawH=fr.h*scale*2.16, drawW=fr.w*scale*2.16; ctx.save(); ctx.translate(f.x,f.y); ctx.scale(f.facing,1); ctx.globalAlpha=f.dodging>0?.62:1; ctx.drawImage(img,fr.x,fr.y,fr.w,fr.h,-drawW/2,-drawH,drawW,drawH); ctx.restore();
 }
@@ -664,6 +740,10 @@ function loop(now){
     drawStartScreen();
     presentFrame();
     requestAnimationFrame(loop);
+    return;
+  }
+  if (gameState === 'pause') {
+    drawStage(); drawFighter(p1); drawFighter(p2); drawUi(); drawPauseMenu(); presentFrame(); requestAnimationFrame(loop);
     return;
   }
   if (!endText) {
