@@ -25,6 +25,8 @@ const canvas = document.getElementById('game');
 const screenCtx = canvas.getContext('2d');
 const renderCanvas = document.createElement('canvas');
 const ctx = renderCanvas.getContext('2d');
+const tintCanvas = document.createElement('canvas');
+const tintCtx = tintCanvas.getContext('2d');
 const sheet = new Image();
 sheet.src = SPRITE_SRC;
 const enemySheet = new Image();
@@ -841,7 +843,28 @@ function drawEndMenu(){
   ctx.fillText('PLAY AGAIN',W/2,by+31);
 }
 function drawFighter(f){
-  const fr=currentFrame(f), img=f.isCpu ? enemySheet : sheet, drawH=fr.h*scale*2.16, drawW=fr.w*scale*2.16; ctx.save(); ctx.translate(f.x,f.y); ctx.scale(f.facing,1); ctx.globalAlpha=f.dodging>0?.62:1; ctx.drawImage(img,fr.x,fr.y,fr.w,fr.h,-drawW/2,-drawH,drawW,drawH); if (f.damageFlash>0) { ctx.globalAlpha=.48*(f.damageFlash/12); ctx.globalCompositeOperation='source-atop'; ctx.fillStyle='#ff1e1e'; ctx.fillRect(-drawW/2,-drawH,drawW,drawH); } ctx.restore();
+  const fr=currentFrame(f), img=f.isCpu ? enemySheet : sheet, drawH=fr.h*scale*2.16, drawW=fr.w*scale*2.16;
+  ctx.save();
+  ctx.translate(f.x,f.y);
+  ctx.scale(f.facing,1);
+  ctx.globalAlpha=f.dodging>0?.62:1;
+  ctx.drawImage(img,fr.x,fr.y,fr.w,fr.h,-drawW/2,-drawH,drawW,drawH);
+  if (f.damageFlash>0) {
+    const tw=Math.ceil(drawW), th=Math.ceil(drawH);
+    if (tintCanvas.width !== tw || tintCanvas.height !== th) { tintCanvas.width=tw; tintCanvas.height=th; tintCtx.imageSmoothingEnabled=false; }
+    tintCtx.clearRect(0,0,tw,th);
+    tintCtx.globalCompositeOperation='source-over';
+    tintCtx.globalAlpha=.52*(f.damageFlash/12);
+    tintCtx.fillStyle='#ff1e1e';
+    tintCtx.fillRect(0,0,tw,th);
+    tintCtx.globalCompositeOperation='destination-in';
+    tintCtx.globalAlpha=1;
+    tintCtx.drawImage(img,fr.x,fr.y,fr.w,fr.h,0,0,tw,th);
+    tintCtx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=f.dodging>0?.62:1;
+    ctx.drawImage(tintCanvas,-drawW/2,-drawH,drawW,drawH);
+  }
+  ctx.restore();
 }
 function drawPlasmas(){
   plasmas.forEach(p => {
