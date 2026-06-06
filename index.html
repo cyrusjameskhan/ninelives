@@ -585,7 +585,7 @@ const attackData = {
 };
 
 function fighter(name,x,facing,isCpu=false){
-  return {name,x,y:ground,vx:0,vy:0,facing,isCpu,health:100,anim:'idle',frame:0,tick:0,lock:0,hitOnce:false,blocking:false,ducking:false,dodging:0,hurt:0,combo:0,ai:0,aiMove:0,stepSfx:0};
+  return {name,x,y:ground,vx:0,vy:0,facing,isCpu,health:100,anim:'idle',frame:0,tick:0,lock:0,hitOnce:false,blocking:false,ducking:false,dodging:0,hurt:0,combo:0,ai:0,aiMove:0,stepSfx:0,lastAttack:'',repeatAttack:0,attackPressure:0,counterBias:0};
 }
 let p1 = fighter('P1', W*.32, 1, false);
 let p2 = fighter('CPU', W*.68, -1, true);
@@ -615,6 +615,11 @@ const pauseActions = [resumeGame, toggleMusicMute, returnToMainMenu];
 function setAnim(f, anim, lock=0){
   if (f.anim !== anim) {
     f.anim=anim; f.frame=0; f.tick=0; f.hitOnce=false;
+    if (!f.isCpu && attackData[anim]) {
+      f.repeatAttack = f.lastAttack === anim ? f.repeatAttack + 1 : 1;
+      f.lastAttack = anim;
+      f.attackPressure = Math.min(100, f.attackPressure + (anim === 'punch' ? 28 : 18));
+    }
     if (gameState === 'fight') {
       const volumes = {jab:.34,punch:.42,kick1:.46,kick2:.5,dodge:.35,jump:.3,block:.32};
       if (volumes[anim]) SfxEngine.playGroup(anim, volumes[anim]);
@@ -649,17 +654,42 @@ function inputPlayer(f, foe){
   if (f.lock <= 0 && !f.blocking && !f.ducking) { if (keys.has('KeyJ')) setAnim(f,'jab',18); else if (keys.has('KeyK')) setAnim(f,'punch',26); else if (keys.has('KeyL')) setAnim(f,'kick1',32); else if (keys.has('KeyI')) setAnim(f,'kick2',34); }
   if (f.lock <= 0 && !f.blocking && !f.ducking) f.vx += move * 1.4 * scale;
 }
+function chooseCpuAttack(f, foe, dist){
+  const punchSpam = foe.lastAttack === 'punch' && foe.repeatAttack >= 2;
+  const highPressure = foe.attackPressure > 54;
+  const close = dist < 88*scale;
+  const mid = dist < 176*scale;
+  const r = Math.random();
+  if (punchSpam && mid) return r < .7 ? 'kick2' : 'kick1';
+  if (foe.y < ground-24 && mid) return 'kick2';
+  if (highPressure && close) return r < .45 ? 'block' : (r < .72 ? 'dodge' : 'kick1');
+  if (close) return r < .18 ? 'block' : r < .38 ? 'jab' : r < .62 ? 'punch' : r < .82 ? 'kick1' : 'kick2';
+  if (mid) return r < .58 ? 'kick2' : r < .75 ? 'kick1' : 'advance';
+  return 'advance';
+}
 function inputCpu(f, foe){
   f.ai--; const dist = Math.abs(f.x-foe.x);
+  const punchSpam = foe.lastAttack === 'punch' && foe.repeatAttack >= 2;
+  const highPressure = foe.attackPressure > 54;
   if (f.ai <= 0 && f.lock <= 0) {
-    const r = Math.random(); f.ai = 18 + Math.random()*28;
-    if (dist < 86*scale) { if (r < .22) { f.blocking=true; setAnim(f,'block',18); } else if (r < .42) setAnim(f,'jab',18); else if (r < .68) setAnim(f,'punch',26); else setAnim(f, Math.random()<.5?'kick1':'kick2',34); }
-    else if (dist < 190*scale && r > .68) setAnim(f,'kick2',34); else f.aiMove = f.x > foe.x ? -1 : 1;
+    f.ai = (punchSpam || highPressure ? 10 : 16) + Math.random()*22;
+    const choice = chooseCpuAttack(f, foe, dist);
+    if (choice === 'block') { f.blocking=true; setAnim(f,'block',18); f.counterBias = 26; }
+    else if (choice === 'dodge') { f.dodging = 24; setAnim(f,'dodge',24); f.vx = -f.facing*6.5*scale; f.counterBias = 22; }
+    else if (choice === 'advance') f.aiMove = f.x > foe.x ? -1 : 1;
+    else setAnim(f, choice, choice === 'jab' ? 18 : choice === 'punch' ? 26 : choice === 'kick1' ? 32 : 34);
   }
-  if (f.lock <= 0) { f.blocking = f.anim === 'block' && f.lock > 0; f.ducking = false; f.vx += (dist > 92*scale ? f.aiMove : -f.aiMove*.15) * .85 * scale; if (Math.random()<.006 && f.y >= ground-1) { f.vy=-14*scale; setAnim(f,'jump',20); } }
+  if (f.lock <= 0) {
+    if (f.counterBias > 0 && dist < 178*scale) { setAnim(f, punchSpam ? 'kick2' : 'kick1', punchSpam ? 34 : 32); f.counterBias = 0; }
+    f.blocking = f.anim === 'block' && f.lock > 0; f.ducking = false;
+    const targetGap = punchSpam ? 128*scale : 92*scale;
+    f.vx += (dist > targetGap ? f.aiMove : -f.aiMove*.28) * (punchSpam ? 1.05 : .85) * scale;
+    if (!punchSpam && Math.random()<.004 && f.y >= ground-1) { f.vy=-14*scale; setAnim(f,'jump',20); }
+  }
 }
 function updateFighter(f, foe){
   f.facing = f.x <= foe.x ? 1 : -1; if (f.hurt > 0) f.hurt--; if (f.lock > 0) f.lock--; if (f.dodging > 0) f.dodging--; if (f.anim === 'block' && f.lock <= 0) f.blocking = false;
+  f.attackPressure = Math.max(0, f.attackPressure - .45); if (f.counterBias > 0) f.counterBias--;
   f.vy += .72*scale; f.x += f.vx; f.y += f.vy; f.vx *= f.y >= ground-1 ? .82 : .94;
   if (Math.abs(f.vx) > 1.1 && f.y >= ground-1 && f.lock <= 0) {
     if (f.stepSfx <= 0) { SfxEngine.playGroup('footstep', .12, .92 + Math.random() * .16); f.stepSfx = 16; }
