@@ -46,6 +46,7 @@ let gameState = 'title';
 let menuMusicStarted = false;
 let pauseSelection = 0;
 let pauseMenuButtons = [];
+let endMenuButton = null;
 function activateMenuMusic(){
   if (menuMusicStarted) return;
   menuMusicStarted = true;
@@ -83,9 +84,15 @@ addEventListener('keydown', e => {
     pauseGame();
     return;
   }
+  if (gameState === 'fight' && endText) return;
   keys.add(e.code);
 });
 addEventListener('pointerdown', e => {
+  if (gameState === 'fight' && endText) {
+    const b = endMenuButton;
+    if (b && e.clientX >= b.x && e.clientX <= b.x+b.w && e.clientY >= b.y && e.clientY <= b.y+b.h) playAgain();
+    return;
+  }
   if (gameState === 'pause') {
     const hit = pauseMenuButtons.find(b => e.clientX >= b.x && e.clientX <= b.x+b.w && e.clientY >= b.y && e.clientY <= b.y+b.h);
     if (hit) hit.action();
@@ -595,7 +602,13 @@ let p1 = fighter('P1', W*.32, 1, false);
 let p2 = fighter('CPU', W*.68, -1, true);
 let timer = 99, timeAcc = 0, endText = '', endClock = 0;
 let plasmas = [];
-function resetRound(){ p1 = fighter('P1', W*.32, 1, false); p2 = fighter('CPU', W*.68, -1, true); plasmas = []; timer = 99; timeAcc = 0; endText = ''; endClock = 0; }
+function resetRound(){ p1 = fighter('P1', W*.32, 1, false); p2 = fighter('CPU', W*.68, -1, true); plasmas = []; timer = 99; timeAcc = 0; endText = ''; endClock = 0; endMenuButton = null; }
+function playAgain(){
+  keys.clear();
+  resetRound();
+  gameState = 'fight';
+  last = performance.now();
+}
 function pauseGame(){
   if (gameState !== 'fight') return;
   keys.clear();
@@ -658,8 +671,11 @@ function tryHit(att, def){
   if (def.health <= 0) finishRound(att.name + ' WINS');
 }
 function finishRound(text){
-  if (!endText) SfxEngine.playGroup(text === 'P1 WINS' ? 'win' : 'defeat', .86);
-  endText = text; endClock = 150;
+  if (!endText) {
+    if (text === 'P1 WINS') SfxEngine.playGroup('win', 1.72);
+    else SfxEngine.playGroup('defeat', .86);
+  }
+  endText = text; endClock = 0;
 }
 function inputPlayer(f, foe){
   let move=0; if (keys.has('KeyA')) move -= 1; if (keys.has('KeyD')) move += 1;
@@ -770,7 +786,7 @@ function drawUi(){
   drawPlasmaMeter(34,y+37,bw,p1,false); drawPlasmaMeter(W-34-bw,y+37,bw,p2,true);
   ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(W/2-34,22,68,48); ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.strokeRect(W/2-34,22,68,48);
   ctx.fillStyle='white'; ctx.font='800 30px Arial'; ctx.textAlign='center'; ctx.fillText(String(timer).padStart(2,'0'),W/2,56);
-  if (endText) { ctx.font='900 '+Math.max(38,52*scale)+'px Arial'; ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillText(endText,W/2,H*.38+4); ctx.fillStyle='white'; ctx.fillText(endText,W/2,H*.38); }
+  if (endText) drawEndMenu();
 }
 function drawPlasmaMeter(x,y,w,f,flip=false){
   const gap=5, segW=(w-gap*2)/3, filled=f.plasmaReady ? 3 : f.streak;
@@ -810,6 +826,20 @@ function drawPauseMenu(){
     ctx.fillText(b.label,b.x+b.w/2,b.y+28);
   });
 }
+function drawEndMenu(){
+  const titleY = H*.38, bw = Math.min(300, W*.52), bh = 48, bx = W/2-bw/2, by = titleY+42;
+  ctx.fillStyle='rgba(0,0,0,.46)'; ctx.fillRect(0,0,W,H);
+  ctx.font='900 '+Math.max(38,52*scale)+'px Arial';
+  ctx.textAlign='center';
+  ctx.fillStyle='rgba(0,0,0,.68)'; ctx.fillText(endText,W/2,titleY+4);
+  ctx.fillStyle='white'; ctx.fillText(endText,W/2,titleY);
+  endMenuButton = {x:bx,y:by,w:bw,h:bh};
+  ctx.fillStyle='rgba(255,196,43,.92)'; ctx.fillRect(bx,by,bw,bh);
+  ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.lineWidth=2; ctx.strokeRect(bx,by,bw,bh);
+  ctx.font='900 '+Math.max(18,23*scale)+'px Arial';
+  ctx.fillStyle='#121212';
+  ctx.fillText('PLAY AGAIN',W/2,by+31);
+}
 function drawFighter(f){
   const fr=currentFrame(f), img=f.isCpu ? enemySheet : sheet, drawH=fr.h*scale*2.16, drawW=fr.w*scale*2.16; ctx.save(); ctx.translate(f.x,f.y); ctx.scale(f.facing,1); ctx.globalAlpha=f.dodging>0?.62:1; ctx.drawImage(img,fr.x,fr.y,fr.w,fr.h,-drawW/2,-drawH,drawW,drawH); if (f.damageFlash>0) { ctx.globalAlpha=.48*(f.damageFlash/12); ctx.globalCompositeOperation='source-atop'; ctx.fillStyle='#ff1e1e'; ctx.fillRect(-drawW/2,-drawH,drawW,drawH); } ctx.restore();
 }
@@ -842,7 +872,7 @@ function loop(now){
     timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':'CPU WINS'); }
     inputPlayer(p1,p2); inputCpu(p2,p1); updateFighter(p1,p2); updateFighter(p2,p1); updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
     const minGap=44*scale, gap=p2.x-p1.x; if (Math.abs(gap)<minGap) { const push=(minGap-Math.abs(gap))/2; p1.x-=Math.sign(gap||1)*push; p2.x+=Math.sign(gap||1)*push; }
-  } else if (--endClock <= 0) resetRound();
+  }
   drawStage(); drawPlasmas(); drawFighter(p1); drawFighter(p2); drawUi(); presentFrame(); requestAnimationFrame(loop);
 }
 sheet.onload = () => requestAnimationFrame(loop);
