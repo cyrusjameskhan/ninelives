@@ -1,0 +1,4 @@
+.server.pid
+smoke-*.png
+__*_smoke.html
+__syntax_check.js
