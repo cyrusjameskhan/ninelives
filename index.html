@@ -9,6 +9,7 @@
   body{touch-action:none;user-select:none;-webkit-user-select:none;}
   canvas{display:block;width:100vw;height:100vh;background:#111;}
   .controls-hint{position:fixed;left:50%;bottom:max(12px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:3;box-sizing:border-box;width:min(920px,calc(100vw - 24px));padding:8px 12px;border:1px solid rgba(255,216,90,.42);background:rgba(5,6,8,.58);box-shadow:0 0 22px rgba(0,0,0,.35);color:#fff;text-align:center;font-size:12px;font-weight:800;line-height:1.35;text-transform:uppercase;letter-spacing:0;text-shadow:0 2px 0 rgba(0,0,0,.7);pointer-events:none;}
+  body[data-state="title"] .controls-hint{top:max(12px,env(safe-area-inset-top));bottom:auto;}
   body[data-state="fight"] .controls-hint{display:none;}
   .controls-hint .mobile{display:none;}
   .touch-controls{display:none;position:fixed;inset:0;z-index:4;pointer-events:none;}
@@ -26,6 +27,7 @@
     .touch-controls{display:block;}
     body[data-state="title"] .touch-controls,body[data-state="matchmaking"] .touch-controls,body[data-paused="true"] .touch-controls,body[data-ended="true"] .touch-controls{display:none;}
     .controls-hint{bottom:max(12px,calc(env(safe-area-inset-bottom) + 10px));font-size:11px;padding:7px 9px;width:min(520px,calc(100vw - 22px));}
+    body[data-state="title"] .controls-hint{top:max(12px,calc(env(safe-area-inset-top) + 10px));bottom:auto;}
     .controls-hint .desktop{display:none;}
     .controls-hint .mobile{display:inline;}
   }
