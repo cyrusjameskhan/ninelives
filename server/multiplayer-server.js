@@ -70,9 +70,9 @@ wss.on('connection', ws => {
       joinQueue(ws);
       return;
     }
-    if (msg.type === 'input') {
+    if (msg.type === 'input' || msg.type === 'state' || msg.type === 'round-end') {
       const peer = peerOf(ws);
-      if (peer) send(peer, {type: 'input', keys: msg.keys || {}});
+      if (peer) send(peer, msg);
     }
   });
 

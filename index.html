@@ -110,6 +110,7 @@ let onlineRoomId = '';
 let remoteKeys = new Set();
 let lastInputSignature = '';
 let lastInputSent = 0;
+let lastStateSent = 0;
 function syncOverlayState(){
   document.body.dataset.state = gameState;
   document.body.dataset.paused = gameState === 'pause' ? 'true' : 'false';
@@ -187,6 +188,7 @@ function startOnlineRound(role, roomId){
   MusicEngine.setMode('fight');
   lastInputSignature = '';
   lastInputSent = 0;
+  lastStateSent = 0;
   syncOverlayState();
   last = performance.now();
 }
@@ -219,6 +221,8 @@ function handleOnlineMessage(raw){
   if (msg.type === 'waiting') onlineStatus = 'WAITING FOR OPPONENT...';
   else if (msg.type === 'start') startOnlineRound(msg.role, msg.roomId);
   else if (msg.type === 'input') setRemoteKeys(msg.keys);
+  else if (msg.type === 'state') applyOnlineState(msg.state);
+  else if (msg.type === 'round-end') finishRound(msg.text || 'ROUND OVER', false);
   else if (msg.type === 'peer-left') {
     remoteKeys.clear();
     if (gameState === 'fight' && !endText) finishRound('OPPONENT LEFT');
@@ -234,6 +238,50 @@ function sendOnlineInput(now){
   lastInputSignature = sig;
   lastInputSent = now;
   sendOnline({type:'input', keys:payload});
+}
+function isOnlineAuthority(){
+  return gameMode === 'online' && onlineRole === 'p1';
+}
+function fighterState(f){
+  return {
+    x:f.x, y:f.y, vx:f.vx, vy:f.vy, facing:f.facing, health:f.health, anim:f.anim,
+    frame:f.frame, tick:f.tick, lock:f.lock, hitOnce:f.hitOnce, blocking:f.blocking,
+    ducking:f.ducking, dodging:f.dodging, hurt:f.hurt, combo:f.combo, stepSfx:f.stepSfx,
+    lastAttack:f.lastAttack, repeatAttack:f.repeatAttack, attackPressure:f.attackPressure,
+    counterBias:f.counterBias, streak:f.streak, plasmaReady:f.plasmaReady, damageFlash:f.damageFlash
+  };
+}
+function applyFighterState(f, state){
+  if (!state) return;
+  Object.assign(f, state);
+}
+function plasmaState(p){
+  return {x:p.x, y:p.y, vx:p.vx, frame:p.frame, life:p.life, facing:p.facing, owner:p.owner === p1 ? 'p1' : 'p2'};
+}
+function applyPlasmaState(items){
+  if (!Array.isArray(items)) return;
+  plasmas = items.map(p => ({...p, hit:false, owner:p.owner === 'p2' ? p2 : p1}));
+}
+function onlineStatePayload(){
+  return {timer, endText, p1:fighterState(p1), p2:fighterState(p2), plasmas:plasmas.map(plasmaState)};
+}
+function sendOnlineState(now, force=false){
+  if (!isOnlineAuthority() || gameState !== 'fight') return;
+  if (!force && now - lastStateSent < 55) return;
+  lastStateSent = now;
+  sendOnline({type:'state', state:onlineStatePayload()});
+}
+function localPlayerWon(text){
+  if (gameMode !== 'online') return text === 'P1 WINS';
+  return text === `${onlineRole.toUpperCase()} WINS`;
+}
+function applyOnlineState(state){
+  if (gameMode !== 'online' || isOnlineAuthority() || !state) return;
+  timer = Number.isFinite(state.timer) ? state.timer : timer;
+  applyFighterState(p1, state.p1);
+  applyFighterState(p2, state.p2);
+  applyPlasmaState(state.plasmas);
+  if (state.endText && !endText) finishRound(state.endText, false);
 }
 function activateTitleSelection(){
   startGame(titleSelection === 0 ? 'local' : 'online');
@@ -914,10 +962,14 @@ function tryHit(att, def){
   if (!guarded) setAnim(def,'hurt',10); att.hitOnce = true;
   if (def.health <= 0) finishRound(att.name + ' WINS');
 }
-function finishRound(text){
+function finishRound(text, broadcast=true){
   if (!endText) {
-    if (text === 'P1 WINS') SfxEngine.playGroup('win', 1.72);
+    if (localPlayerWon(text)) SfxEngine.playGroup('win', 1.72);
     else SfxEngine.playGroup('defeat', .86);
+    if (broadcast && isOnlineAuthority()) {
+      sendOnline({type:'round-end', text});
+      sendOnlineState(performance.now(), true);
+    }
   }
   endText = text; endClock = 0; syncOverlayState();
 }
@@ -1189,16 +1241,26 @@ function loop(now){
     return;
   }
   if (!endText) {
-    timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':p2.name + ' WINS'); }
     if (gameMode === 'online') {
       sendOnlineInput(now);
+      const authoritative = isOnlineAuthority();
+      if (authoritative) {
+        timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':'P2 WINS'); }
+      }
       if (onlineRole === 'p2') { inputFighter(p1,p2,remoteKeys); inputFighter(p2,p1,keys); }
       else { inputFighter(p1,p2,keys); inputFighter(p2,p1,remoteKeys); }
+      updateFighter(p1,p2); updateFighter(p2,p1);
+      if (authoritative) {
+        updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
+        const minGap=44*scale, gap=p2.x-p1.x; if (Math.abs(gap)<minGap) { const push=(minGap-Math.abs(gap))/2; p1.x-=Math.sign(gap||1)*push; p2.x+=Math.sign(gap||1)*push; }
+        sendOnlineState(now);
+      }
     } else {
+      timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':p2.name + ' WINS'); }
       inputPlayer(p1,p2); inputCpu(p2,p1);
+      updateFighter(p1,p2); updateFighter(p2,p1); updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
+      const minGap=44*scale, gap=p2.x-p1.x; if (Math.abs(gap)<minGap) { const push=(minGap-Math.abs(gap))/2; p1.x-=Math.sign(gap||1)*push; p2.x+=Math.sign(gap||1)*push; }
     }
-    updateFighter(p1,p2); updateFighter(p2,p1); updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
-    const minGap=44*scale, gap=p2.x-p1.x; if (Math.abs(gap)<minGap) { const push=(minGap-Math.abs(gap))/2; p1.x-=Math.sign(gap||1)*push; p2.x+=Math.sign(gap||1)*push; }
   }
   drawStage(); drawPlasmas(); drawFighter(p1); drawFighter(p2); drawUi(); presentFrame(); requestAnimationFrame(loop);
 }
