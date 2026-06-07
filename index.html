@@ -94,7 +94,7 @@ titleImg.src = TITLE_SRC;
 const keys = new Set();
 const touchButtons = [...document.querySelectorAll('.touch-btn')];
 const CONTROL_CODES = ['KeyA','KeyD','KeyW','KeyS','KeyU','ShiftLeft','KeyJ','KeyK','KeyL','KeyI'];
-const ONLINE_WS_URL = window.NINE_LIVES_WS_URL || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + '66.135.12.137:8797');
+const ONLINE_WS_URL = window.NINE_LIVES_WS_URL || 'wss://66.135.12.137.sslip.io';
 let gameState = 'title';
 let gameMode = 'local';
 let menuMusicStarted = false;
