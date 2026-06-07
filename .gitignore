@@ -2,3 +2,4 @@
 smoke-*.png
 __*_smoke.html
 __syntax_check.js
+node_modules/

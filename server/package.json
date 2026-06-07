@@ -1,0 +1,13 @@
+{
+  "name": "ninelives-multiplayer-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket matchmaker for Nine Lives online multiplayer.",
+  "main": "multiplayer-server.js",
+  "scripts": {
+    "start": "node multiplayer-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

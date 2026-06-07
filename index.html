@@ -24,7 +24,7 @@
   .touch-btn[data-key="KeyD"]{grid-column:3;grid-row:2;}
   @media (pointer:coarse),(max-width:820px){
     .touch-controls{display:block;}
-    body[data-state="title"] .touch-controls,body[data-paused="true"] .touch-controls,body[data-ended="true"] .touch-controls{display:none;}
+    body[data-state="title"] .touch-controls,body[data-state="matchmaking"] .touch-controls,body[data-paused="true"] .touch-controls,body[data-ended="true"] .touch-controls{display:none;}
     .controls-hint{bottom:max(12px,calc(env(safe-area-inset-bottom) + 10px));font-size:11px;padding:7px 9px;width:min(520px,calc(100vw - 22px));}
     .controls-hint .desktop{display:none;}
     .controls-hint .mobile{display:inline;}
@@ -93,11 +93,23 @@ titleImg.src = TITLE_SRC;
 
 const keys = new Set();
 const touchButtons = [...document.querySelectorAll('.touch-btn')];
+const CONTROL_CODES = ['KeyA','KeyD','KeyW','KeyS','KeyU','ShiftLeft','KeyJ','KeyK','KeyL','KeyI'];
+const ONLINE_WS_URL = window.NINE_LIVES_WS_URL || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + '66.135.12.137:8797');
 let gameState = 'title';
+let gameMode = 'local';
 let menuMusicStarted = false;
+let titleSelection = 0;
+let titleMenuButtons = [];
 let pauseSelection = 0;
 let pauseMenuButtons = [];
 let endMenuButton = null;
+let onlineSocket = null;
+let onlineStatus = '';
+let onlineRole = 'p1';
+let onlineRoomId = '';
+let remoteKeys = new Set();
+let lastInputSignature = '';
+let lastInputSent = 0;
 function syncOverlayState(){
   document.body.dataset.state = gameState;
   document.body.dataset.paused = gameState === 'pause' ? 'true' : 'false';
@@ -110,23 +122,133 @@ function activateMenuMusic(){
   SfxEngine.playGroup('meow', .45);
   MusicEngine.start('title');
 }
-function startGame(){
-  if (gameState !== 'title') return;
+function startGame(mode='local'){
+  if (gameState !== 'title' && gameState !== 'matchmaking') return;
   SfxEngine.unlock();
   SfxEngine.playGroup('meow', .38);
+  if (mode === 'online') {
+    startOnlineMatchmaking();
+    return;
+  }
+  startLocalGame();
+}
+function startLocalGame(){
+  closeOnlineSocket();
+  gameMode = 'local';
   MusicEngine.start('fight');
   MusicEngine.setMode('fight');
   keys.clear();
-  resetRound();
+  remoteKeys.clear();
+  resetRound(true);
   gameState = 'fight';
   syncOverlayState();
   last = performance.now();
 }
+function startOnlineMatchmaking(){
+  closeOnlineSocket();
+  gameMode = 'online';
+  keys.clear();
+  remoteKeys.clear();
+  onlineRole = 'p1';
+  onlineRoomId = '';
+  onlineStatus = 'CONNECTING TO ONLINE SERVER...';
+  gameState = 'matchmaking';
+  syncOverlayState();
+  MusicEngine.start('title');
+  MusicEngine.setMode('title');
+  try {
+    onlineSocket = new WebSocket(ONLINE_WS_URL);
+  } catch (err) {
+    onlineStatus = 'ONLINE CONNECTION FAILED';
+    return;
+  }
+  onlineSocket.addEventListener('open', () => {
+    onlineStatus = 'WAITING FOR OPPONENT...';
+    sendOnline({type:'join'});
+  });
+  onlineSocket.addEventListener('message', e => handleOnlineMessage(e.data));
+  onlineSocket.addEventListener('close', () => {
+    if (gameState === 'matchmaking') onlineStatus = 'DISCONNECTED - PRESS ESC';
+    else if (gameMode === 'online' && gameState === 'fight' && !endText) finishRound('OPPONENT LEFT');
+  });
+  onlineSocket.addEventListener('error', () => {
+    if (gameState === 'matchmaking') onlineStatus = 'ONLINE CONNECTION FAILED';
+  });
+}
+function startOnlineRound(role, roomId){
+  gameMode = 'online';
+  onlineRole = role === 'p2' ? 'p2' : 'p1';
+  onlineRoomId = roomId || '';
+  keys.clear();
+  remoteKeys.clear();
+  resetRound(false);
+  gameState = 'fight';
+  MusicEngine.start('fight');
+  MusicEngine.setMode('fight');
+  lastInputSignature = '';
+  lastInputSent = 0;
+  syncOverlayState();
+  last = performance.now();
+}
+function closeOnlineSocket(){
+  if (onlineSocket) {
+    try { onlineSocket.close(); } catch {}
+  }
+  onlineSocket = null;
+  onlineStatus = '';
+  onlineRoomId = '';
+}
+function sendOnline(payload){
+  if (!onlineSocket || onlineSocket.readyState !== WebSocket.OPEN) return;
+  onlineSocket.send(JSON.stringify(payload));
+}
+function keyPayload(set){
+  return {
+    KeyA:set.has('KeyA'), KeyD:set.has('KeyD'), KeyW:set.has('KeyW'), KeyS:set.has('KeyS'),
+    KeyU:set.has('KeyU'), ShiftLeft:set.has('ShiftLeft'), KeyJ:set.has('KeyJ'), KeyK:set.has('KeyK'),
+    KeyL:set.has('KeyL'), KeyI:set.has('KeyI')
+  };
+}
+function setRemoteKeys(payload){
+  remoteKeys.clear();
+  CONTROL_CODES.forEach(code => { if (payload?.[code]) remoteKeys.add(code); });
+}
+function handleOnlineMessage(raw){
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return; }
+  if (msg.type === 'waiting') onlineStatus = 'WAITING FOR OPPONENT...';
+  else if (msg.type === 'start') startOnlineRound(msg.role, msg.roomId);
+  else if (msg.type === 'input') setRemoteKeys(msg.keys);
+  else if (msg.type === 'peer-left') {
+    remoteKeys.clear();
+    if (gameState === 'fight' && !endText) finishRound('OPPONENT LEFT');
+    else onlineStatus = 'OPPONENT LEFT';
+  }
+  else if (msg.type === 'error') onlineStatus = msg.message || 'ONLINE ERROR';
+}
+function sendOnlineInput(now){
+  if (gameMode !== 'online' || gameState !== 'fight' || endText) return;
+  const payload = keyPayload(keys);
+  const sig = JSON.stringify(payload);
+  if (sig === lastInputSignature && now - lastInputSent < 120) return;
+  lastInputSignature = sig;
+  lastInputSent = now;
+  sendOnline({type:'input', keys:payload});
+}
+function activateTitleSelection(){
+  startGame(titleSelection === 0 ? 'local' : 'online');
+}
 addEventListener('keydown', e => {
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Escape'].includes(e.code)) e.preventDefault();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Escape','Enter'].includes(e.code)) e.preventDefault();
   if (gameState === 'title') {
     if (!menuMusicStarted) activateMenuMusic();
-    else startGame();
+    if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') titleSelection = (titleSelection + 1) % 2;
+    else if (e.code === 'ArrowDown' || e.code === 'ArrowRight') titleSelection = (titleSelection + 1) % 2;
+    else if (e.code === 'Enter' || e.code === 'Space') activateTitleSelection();
+    return;
+  }
+  if (gameState === 'matchmaking') {
+    if (e.code === 'Escape' || e.code === 'KeyP') returnToMainMenu();
     return;
   }
   if (gameState === 'pause') {
@@ -138,6 +260,10 @@ addEventListener('keydown', e => {
     return;
   }
   if (gameState === 'fight' && (e.code === 'Escape' || e.code === 'KeyP')) {
+    if (gameMode === 'online') {
+      returnToMainMenu();
+      return;
+    }
     pauseGame();
     return;
   }
@@ -159,6 +285,10 @@ touchButtons.forEach(btn => {
     e.stopPropagation();
     SfxEngine.unlock();
     if (btn.dataset.action === 'pause') {
+      if (gameMode === 'online' && gameState === 'fight') {
+        returnToMainMenu();
+        return;
+      }
       if (gameState === 'fight' && !endText) pauseGame();
       return;
     }
@@ -191,9 +321,14 @@ addEventListener('pointerdown', e => {
     if (hit) hit.action();
     return;
   }
+  if (gameState === 'matchmaking') {
+    returnToMainMenu();
+    return;
+  }
   if (gameState !== 'title') return;
   if (!menuMusicStarted) activateMenuMusic();
-  else startGame();
+  const hit = titleMenuButtons.find(b => e.clientX >= b.x && e.clientX <= b.x+b.w && e.clientY >= b.y && e.clientY <= b.y+b.h);
+  if (hit) startGame(hit.mode);
 });
 addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => { keys.clear(); touchButtons.forEach(releaseTouchButton); });
@@ -696,10 +831,16 @@ let p2 = fighter('CPU', W*.68, -1, true);
 let timer = 99, timeAcc = 0, endText = '', endClock = 0;
 let plasmas = [];
 syncOverlayState();
-function resetRound(){ p1 = fighter('P1', W*.32, 1, false); p2 = fighter('CPU', W*.68, -1, true); plasmas = []; timer = 99; timeAcc = 0; endText = ''; endClock = 0; endMenuButton = null; }
+function resetRound(useCpu=true){ p1 = fighter('P1', W*.32, 1, false); p2 = fighter(useCpu ? 'CPU' : 'P2', W*.68, -1, true); plasmas = []; timer = 99; timeAcc = 0; endText = ''; endClock = 0; endMenuButton = null; }
 function playAgain(){
   keys.clear();
-  resetRound();
+  remoteKeys.clear();
+  if (gameMode === 'online') {
+    startOnlineMatchmaking();
+    return;
+  }
+  resetRound(true);
+  gameMode = 'local';
   gameState = 'fight';
   syncOverlayState();
   last = performance.now();
@@ -721,7 +862,10 @@ function resumeGame(){
 function toggleMusicMute(){ MusicEngine.toggleMuted(); }
 function returnToMainMenu(){
   keys.clear();
-  resetRound();
+  remoteKeys.clear();
+  closeOnlineSocket();
+  gameMode = 'local';
+  resetRound(true);
   menuMusicStarted = true;
   MusicEngine.setMode('title');
   gameState = 'title';
@@ -732,7 +876,7 @@ function setAnim(f, anim, lock=0){
   if (f.anim !== anim) {
     f.anim=anim; f.frame=0; f.tick=0; f.hitOnce=false;
     if (anim === 'punch' && f.plasmaReady) spawnPlasma(f);
-    if (!f.isCpu && attackData[anim]) {
+    if ((!f.isCpu || gameMode === 'online') && attackData[anim]) {
       f.repeatAttack = f.lastAttack === anim ? f.repeatAttack + 1 : 1;
       f.lastAttack = anim;
       f.attackPressure = Math.min(100, f.attackPressure + (anim === 'punch' ? 28 : 18));
@@ -777,22 +921,30 @@ function finishRound(text){
   }
   endText = text; endClock = 0; syncOverlayState();
 }
-function inputPlayer(f, foe){
-  let move=0; if (keys.has('KeyA')) move -= 1; if (keys.has('KeyD')) move += 1;
-  f.blocking = keys.has('KeyU') && f.y >= ground-1 && f.lock <= 0; f.ducking = keys.has('KeyS') && f.y >= ground-1 && f.lock <= 0;
-  if (keys.has('KeyW') && f.y >= ground-1 && f.lock <= 0) { f.vy = -15*scale; setAnim(f,'jump',20); }
-  if (keys.has('ShiftLeft') && f.lock <= 0 && f.y >= ground-1) { f.dodging = 26; setAnim(f,'dodge',26); f.vx = -f.facing*7*scale; }
-  if (f.lock <= 0 && !f.blocking && !f.ducking) { if (keys.has('KeyJ')) setAnim(f,'jab',18); else if (keys.has('KeyK')) setAnim(f,'punch',26); else if (keys.has('KeyL')) setAnim(f,'kick1',32); else if (keys.has('KeyI')) setAnim(f,'kick2',34); }
+function inputFighter(f, foe, inputKeys){
+  let move=0; if (inputKeys.has('KeyA')) move -= 1; if (inputKeys.has('KeyD')) move += 1;
+  f.blocking = inputKeys.has('KeyU') && f.y >= ground-1 && f.lock <= 0; f.ducking = inputKeys.has('KeyS') && f.y >= ground-1 && f.lock <= 0;
+  if (inputKeys.has('KeyW') && f.y >= ground-1 && f.lock <= 0) { f.vy = -15*scale; setAnim(f,'jump',20); }
+  if (inputKeys.has('ShiftLeft') && f.lock <= 0 && f.y >= ground-1) { f.dodging = 26; setAnim(f,'dodge',26); f.vx = dodgeAwayVelocity(f, foe, 8.5); }
+  if (f.lock <= 0 && !f.blocking && !f.ducking) { if (inputKeys.has('KeyJ')) setAnim(f,'jab',18); else if (inputKeys.has('KeyK')) setAnim(f,'punch',26); else if (inputKeys.has('KeyL')) setAnim(f,'kick1',32); else if (inputKeys.has('KeyI')) setAnim(f,'kick2',34); }
   if (f.lock <= 0 && !f.blocking && !f.ducking) f.vx += move * 1.4 * scale;
+}
+function inputPlayer(f, foe){ inputFighter(f, foe, keys); }
+function dodgeAwayVelocity(f, foe, speed){
+  const away = Math.sign(f.x - foe.x) || -f.facing || -1;
+  return away * speed * scale;
 }
 function chooseCpuAttack(f, foe, dist){
   const punchSpam = foe.lastAttack === 'punch' && foe.repeatAttack >= 2;
+  const highKickSpam = foe.lastAttack === 'kick2' && foe.repeatAttack >= 2;
   const highPressure = foe.attackPressure > 54;
   const close = dist < 88*scale;
   const mid = dist < 176*scale;
   const r = Math.random();
   if (foe.ducking && close) return r < .62 ? 'punch' : 'jab';
   if (foe.ducking && mid) return r < .45 ? 'advance' : 'punch';
+  if (highKickSpam && close) return r < .72 ? 'duck' : 'punch';
+  if (highKickSpam && mid) return r < .58 ? 'duck' : 'advance';
   if (punchSpam && mid) return r < .7 ? 'kick2' : 'kick1';
   if (foe.y < ground-24 && mid) return 'kick2';
   if (highPressure && close) return r < .45 ? 'block' : (r < .72 ? 'dodge' : 'kick1');
@@ -803,21 +955,23 @@ function chooseCpuAttack(f, foe, dist){
 function inputCpu(f, foe){
   f.ai--; const dist = Math.abs(f.x-foe.x);
   const punchSpam = foe.lastAttack === 'punch' && foe.repeatAttack >= 2;
+  const highKickSpam = foe.lastAttack === 'kick2' && foe.repeatAttack >= 2;
   const highPressure = foe.attackPressure > 54;
   if (f.ai <= 0 && f.lock <= 0) {
-    f.ai = (punchSpam || highPressure ? 10 : 16) + Math.random()*22;
+    f.ai = (punchSpam || highKickSpam || highPressure ? 10 : 16) + Math.random()*22;
     const choice = chooseCpuAttack(f, foe, dist);
     if (choice === 'block') { f.blocking=true; setAnim(f,'block',18); f.counterBias = 26; }
-    else if (choice === 'dodge') { f.dodging = 24; setAnim(f,'dodge',24); f.vx = -f.facing*6.5*scale; f.counterBias = 22; }
+    else if (choice === 'duck') { f.ducking = true; setAnim(f,'duck',22); f.counterBias = 24; }
+    else if (choice === 'dodge') { f.dodging = 24; setAnim(f,'dodge',24); f.vx = dodgeAwayVelocity(f, foe, 7.8); f.counterBias = 22; }
     else if (choice === 'advance') f.aiMove = f.x > foe.x ? -1 : 1;
     else setAnim(f, choice, choice === 'jab' ? 18 : choice === 'punch' ? 26 : choice === 'kick1' ? 32 : 34);
   }
   if (f.lock <= 0) {
-    if (f.counterBias > 0 && dist < 178*scale) { setAnim(f, punchSpam ? 'kick2' : 'kick1', punchSpam ? 34 : 32); f.counterBias = 0; }
+    if (f.counterBias > 0 && dist < 178*scale) { setAnim(f, highKickSpam ? 'punch' : (punchSpam ? 'kick2' : 'kick1'), highKickSpam ? 26 : (punchSpam ? 34 : 32)); f.counterBias = 0; }
     f.blocking = f.anim === 'block' && f.lock > 0; f.ducking = false;
-    const targetGap = punchSpam ? 128*scale : 92*scale;
-    f.vx += (dist > targetGap ? f.aiMove : -f.aiMove*.28) * (punchSpam ? 1.05 : .85) * scale;
-    if (!punchSpam && Math.random()<.004 && f.y >= ground-1) { f.vy=-14*scale; setAnim(f,'jump',20); }
+    const targetGap = punchSpam || highKickSpam ? 128*scale : 92*scale;
+    f.vx += (dist > targetGap ? f.aiMove : -f.aiMove*.28) * (punchSpam || highKickSpam ? 1.05 : .85) * scale;
+    if (!punchSpam && !highKickSpam && Math.random()<.004 && f.y >= ground-1) { f.vy=-14*scale; setAnim(f,'jump',20); }
   }
 }
 function plasmaBox(p){ return {x:p.x - 30*scale, y:p.y - 22*scale, w:60*scale, h:44*scale}; }
@@ -873,10 +1027,47 @@ function drawStartScreen(){
     const dw = titleImg.width * s, dh = titleImg.height * s;
     ctx.drawImage(titleImg, (W-dw)/2, (H-dh)/2 - H*.02, dw, dh);
   }
-  ctx.fillStyle='rgba(255,196,43,.88)';
-  ctx.font='700 '+Math.max(16, Math.min(26, W*.022))+'px Arial';
+  const bw = Math.min(310, W*.62), bh = 46, gap = 14;
+  const x = W/2 - bw/2, y = H - Math.max(142, H*.22);
+  titleMenuButtons = [
+    {label:'PLAY LOCAL', mode:'local', x, y, w:bw, h:bh},
+    {label:'PLAY ONLINE', mode:'online', x, y:y+bh+gap, w:bw, h:bh}
+  ];
+  titleMenuButtons.forEach((b,i) => {
+    const active = i === titleSelection;
+    ctx.fillStyle = active ? 'rgba(255,196,43,.92)' : 'rgba(5,6,8,.68)';
+    ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.strokeStyle = active ? 'rgba(255,255,255,.92)' : 'rgba(255,216,90,.46)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x,b.y,b.w,b.h);
+    ctx.fillStyle = active ? '#111' : '#fff';
+    ctx.font='900 '+Math.max(17, Math.min(22, W*.02))+'px Arial';
+    ctx.textAlign='center';
+    ctx.fillText(b.label, b.x+b.w/2, b.y+30);
+  });
+  ctx.fillStyle='rgba(255,255,255,.72)';
+  ctx.font='700 '+Math.max(12, Math.min(15, W*.014))+'px Arial';
   ctx.textAlign='center';
-  ctx.fillText(menuMusicStarted ? 'PRESS ANY KEY TO FIGHT' : 'PRESS ANY KEY FOR MUSIC', W/2, H - Math.max(34, H*.075));
+  ctx.fillText('ARROWS SELECT  ENTER START', W/2, y+bh*2+gap+28);
+}
+function drawMatchmakingScreen(){
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,W,H);
+  if (titleReady) {
+    const s = Math.min(W * .78 / titleImg.width, H * .62 / titleImg.height) * .72;
+    const dw = titleImg.width * s, dh = titleImg.height * s;
+    ctx.drawImage(titleImg, (W-dw)/2, H*.12, dw, dh);
+  }
+  ctx.textAlign='center';
+  ctx.fillStyle='#ffd85a';
+  ctx.font='900 '+Math.max(24, Math.min(36, W*.038))+'px Arial';
+  ctx.fillText('ONLINE MATCH', W/2, H*.58);
+  ctx.fillStyle='white';
+  ctx.font='800 '+Math.max(16, Math.min(22, W*.024))+'px Arial';
+  ctx.fillText(onlineStatus || 'WAITING FOR OPPONENT...', W/2, H*.58+42);
+  ctx.fillStyle='rgba(255,255,255,.68)';
+  ctx.font='700 '+Math.max(12, Math.min(15, W*.014))+'px Arial';
+  ctx.fillText('ESC OR TAP TO CANCEL', W/2, H*.58+74);
 }
 function bar(x,y,w,h,val,color,name,flip=false){
   ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(x,y,w,h); ctx.strokeStyle='rgba(255,255,255,.42)'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
@@ -884,7 +1075,7 @@ function bar(x,y,w,h,val,color,name,flip=false){
   ctx.fillStyle='white'; ctx.font='700 16px Arial'; ctx.textAlign=flip?'right':'left'; ctx.fillText(name, flip?x+w:x, y-8);
 }
 function drawUi(){
-  const bw=Math.min(360,W*.36), y=36; bar(34,y,bw,25,p1.health,'#50d26d','P1'); bar(W-34-bw,y,bw,25,p2.health,'#ee4e56','CPU',true);
+  const bw=Math.min(360,W*.36), y=36; bar(34,y,bw,25,p1.health,'#50d26d',p1.name); bar(W-34-bw,y,bw,25,p2.health,'#ee4e56',p2.name,true);
   drawPlasmaMeter(34,y+37,bw,p1,false); drawPlasmaMeter(W-34-bw,y+37,bw,p2,true);
   ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(W/2-34,22,68,48); ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.strokeRect(W/2-34,22,68,48);
   ctx.fillStyle='white'; ctx.font='800 30px Arial'; ctx.textAlign='center'; ctx.fillText(String(timer).padStart(2,'0'),W/2,56);
@@ -987,13 +1178,26 @@ function loop(now){
     requestAnimationFrame(loop);
     return;
   }
+  if (gameState === 'matchmaking') {
+    drawMatchmakingScreen();
+    presentFrame();
+    requestAnimationFrame(loop);
+    return;
+  }
   if (gameState === 'pause') {
     drawStage(); drawPlasmas(); drawFighter(p1); drawFighter(p2); drawUi(); drawPauseMenu(); presentFrame(); requestAnimationFrame(loop);
     return;
   }
   if (!endText) {
-    timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':'CPU WINS'); }
-    inputPlayer(p1,p2); inputCpu(p2,p1); updateFighter(p1,p2); updateFighter(p2,p1); updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
+    timeAcc += dt; if (timeAcc >= 1000) { timeAcc-=1000; timer--; if (timer<=0) finishRound(p1.health>=p2.health?'P1 WINS':p2.name + ' WINS'); }
+    if (gameMode === 'online') {
+      sendOnlineInput(now);
+      if (onlineRole === 'p2') { inputFighter(p1,p2,remoteKeys); inputFighter(p2,p1,keys); }
+      else { inputFighter(p1,p2,keys); inputFighter(p2,p1,remoteKeys); }
+    } else {
+      inputPlayer(p1,p2); inputCpu(p2,p1);
+    }
+    updateFighter(p1,p2); updateFighter(p2,p1); updatePlasmas(); tryHit(p1,p2); tryHit(p2,p1);
     const minGap=44*scale, gap=p2.x-p1.x; if (Math.abs(gap)<minGap) { const push=(minGap-Math.abs(gap))/2; p1.x-=Math.sign(gap||1)*push; p2.x+=Math.sign(gap||1)*push; }
   }
   drawStage(); drawPlasmas(); drawFighter(p1); drawFighter(p2); drawUi(); presentFrame(); requestAnimationFrame(loop);
